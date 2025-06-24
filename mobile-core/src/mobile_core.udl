@@ -1,0 +1,16 @@
+[Error]
+interface CoreError {
+    NetworkError(string message);
+    JsonError(string message);
+    Timeout();
+};
+
+namespace mobile_core {
+    [Throws=CoreError]
+    string emergency_commit(
+        string repo_path, 
+        string file_path, 
+        string new_content, 
+        string commit_message
+    );
+};

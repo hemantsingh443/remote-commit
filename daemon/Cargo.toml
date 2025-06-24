@@ -9,6 +9,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 anyhow = "1.0"
+pico-args = "0.5" 
 
 # Corrected libp2p dependencies with all required features
 libp2p = { version = "0.51", features = [
@@ -21,5 +22,6 @@ libp2p = { version = "0.51", features = [
     "macros",        # Enables #[derive(NetworkBehaviour)]
     "dns",           # Required for development_transport
     "websocket",     # Often needed for full transport support
+    "serde",         # Enable serde support for PeerId
 ] } 
 futures = "0.3"

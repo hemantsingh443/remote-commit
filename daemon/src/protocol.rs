@@ -1,13 +1,18 @@
+// In protocol.rs
 use serde::{Deserialize, Serialize};
+use libp2p::PeerId; // We need to serialize PeerId
 
-// A wrapper for all messages sent on the network
 #[derive(Serialize, Deserialize, Debug)]
 pub enum NetworkMessage {
+    // Client -> Daemon: "I'd like to pair with you."
+    PairRequest,
+    // Daemon -> Client: "Okay, I've saved you as a trusted peer."
+    PairSuccess,
+    
     Request(CommitRequest),
     Response(CommitResponse),
 }
 
-// The message the client sends to the daemon
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CommitRequest {
     pub repo_path: String,
@@ -16,7 +21,6 @@ pub struct CommitRequest {
     pub commit_message: String,
 }
 
-// The message the daemon sends back to the client
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CommitResponse {
     pub success: bool,

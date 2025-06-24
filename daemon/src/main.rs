@@ -16,9 +16,47 @@ use libp2p::{
 };
 use futures::StreamExt; // Required for select_next_some()
 use tokio::select;
+use std::collections::HashSet;
+use std::fs;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use pico_args;
+use serde_json;
 
 mod protocol;
 use protocol::{CommitRequest, CommitResponse, NetworkMessage};
+
+// --- NEW: A struct to manage our trusted peers ---
+struct PeerManager {
+    trusted_peers_path: PathBuf,
+    trusted_peers: HashSet<PeerId>,
+}
+
+impl PeerManager {
+    fn new() -> anyhow::Result<Self> {
+        let path = PathBuf::from("trusted_peers.json");
+        let peers = if path.exists() {
+            let file_content = fs::read_to_string(&path)?;
+            serde_json::from_str(&file_content)?
+        } else {
+            HashSet::new()
+        };
+        println!("Loaded {} trusted peers.", peers.len());
+        Ok(Self { trusted_peers_path: path, trusted_peers: peers })
+    }
+
+    fn is_trusted(&self, peer_id: &PeerId) -> bool {
+        self.trusted_peers.contains(peer_id)
+    }
+
+    fn add_trusted_peer(&mut self, peer_id: PeerId) -> anyhow::Result<()> {
+        self.trusted_peers.insert(peer_id);
+        let json = serde_json::to_string_pretty(&self.trusted_peers)?;
+        fs::write(&self.trusted_peers_path, json)?;
+        println!("Added new trusted peer: {}. Total: {}", peer_id, self.trusted_peers.len());
+        Ok(())
+    }
+}
 
 // This derive macro will now work correctly with proper imports
 #[derive(NetworkBehaviour)]
@@ -30,9 +68,23 @@ struct DaemonBehaviour {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // --- NEW: Parse command-line arguments ---
+    let mut args = pico_args::Arguments::from_env();
+    let is_pairing_mode = args.contains("--pair");
+
+    let mut peer_manager = PeerManager::new()?;
     let id_keys = identity::Keypair::generate_ed25519();
     let local_peer_id = PeerId::from(id_keys.public());
+    println!("------------------------------------------------------");
     println!("Daemon Peer ID: {}", local_peer_id);
+    if is_pairing_mode {
+        println!("DAEMON IS IN PAIRING MODE.");
+        println!("Client can now send a pair request.");
+    } else {
+        println!("DAEMON IS IN STANDARD MODE.");
+        println!("Run with --pair to allow new clients to connect.");
+    }
+    println!("------------------------------------------------------");
 
     // Build transport manually since development_transport might not be available
     // with your current feature set
@@ -83,11 +135,32 @@ async fn main() -> Result<()> {
                 },
                 
                 SwarmEvent::Behaviour(DaemonBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-                    propagation_source: peer_id,
+                    propagation_source: source_peer,
                     message,
                     ..
                 })) => {
-                    handle_network_message(message, &mut swarm.behaviour_mut().gossipsub);
+                    let source_peer = match message.source {
+                        Some(peer_id) => peer_id,
+                        None => continue, // Ignore anonymous messages
+                    };
+                    match serde_json::from_slice::<NetworkMessage>(&message.data) {
+                        Ok(NetworkMessage::PairRequest) => {
+                            if is_pairing_mode {
+                                handle_pair_request(source_peer, &mut peer_manager, topic.clone(), &mut swarm.behaviour_mut().gossipsub);
+                            } else {
+                                println!("Ignoring pair request from {}. Daemon not in --pair mode.", source_peer);
+                            }
+                        }
+                        Ok(NetworkMessage::Request(request)) => {
+                            if peer_manager.is_trusted(&source_peer) {
+                                println!("Received trusted commit request from {}", source_peer);
+                                handle_commit_request(request, topic.clone(), &mut swarm.behaviour_mut().gossipsub);
+                            } else {
+                                println!("IGNORING untrusted commit request from {}", source_peer);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
                 _ => {}
             }
@@ -95,39 +168,65 @@ async fn main() -> Result<()> {
     }
 }
 
-fn handle_network_message(message: Message, gossipsub: &mut gossipsub::Behaviour) {
-    if let Ok(NetworkMessage::Request(request)) = serde_json::from_slice(&message.data) {
-        println!("Received commit request from peer: {}", message.source.unwrap());
-        let response = match git_actor::perform_commit(
-            &request.repo_path,
-            &request.file_path,
-            &request.new_content,
-            &request.commit_message,
-        ) {
-            Ok(oid) => {
-                println!("Successfully created commit: {}", oid);
-                CommitResponse {
-                    success: true,
-                    commit_hash: Some(oid.to_string()),
-                    error_message: None,
-                }
-            }
-            Err(e) => {
-                eprintln!("Failed to perform commit: {:?}", e);
-                CommitResponse {
-                    success: false,
-                    commit_hash: None,
-                    error_message: Some(e.to_string()),
-                }
-            }
-        };
-        let response_message = NetworkMessage::Response(response);
-        if let Ok(json) = serde_json::to_string(&response_message) {
-            if let Err(e) = gossipsub.publish(message.topic, json.as_bytes()) {
-                eprintln!("Failed to publish response: {:?}", e);
+// --- NEW: Handler for pairing ---
+fn handle_pair_request(
+    peer_id: PeerId,
+    peer_manager: &mut PeerManager,
+    topic: gossipsub::IdentTopic,
+    gossipsub: &mut gossipsub::Behaviour,
+) {
+    print!("Pairing request received from {}. Approve? (y/n): ", peer_id);
+    io::stdout().flush().unwrap();
+    let mut line = String::new();
+    if io::stdin().read_line(&mut line).is_ok() && line.trim().eq_ignore_ascii_case("y") {
+        if let Err(e) = peer_manager.add_trusted_peer(peer_id) {
+            eprintln!("Failed to save trusted peer: {}", e);
+            return;
+        }
+        let response = NetworkMessage::PairSuccess;
+        if let Ok(json) = serde_json::to_string(&response) {
+            if let Err(e) = gossipsub.publish(topic, json.as_bytes()) {
+                eprintln!("Failed to publish pairing success message: {:?}", e);
             } else {
-                println!("Published commit response.");
+                println!("Published PairSuccess response.");
             }
+        }
+    } else {
+        println!("Pairing for {} denied.", peer_id);
+    }
+}
+
+// --- MODIFIED: Handler for commits ---
+fn handle_commit_request(request: CommitRequest, topic: gossipsub::IdentTopic, gossipsub: &mut gossipsub::Behaviour) {
+    let response = match git_actor::perform_commit(
+        &request.repo_path,
+        &request.file_path,
+        &request.new_content,
+        &request.commit_message,
+    ) {
+        Ok(oid) => {
+            println!("Successfully created commit: {}", oid);
+            CommitResponse {
+                success: true,
+                commit_hash: Some(oid.to_string()),
+                error_message: None,
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to perform commit: {:?}", e);
+            CommitResponse {
+                success: false,
+                commit_hash: None,
+                error_message: Some(e.to_string()),
+            }
+        }
+    };
+    let response_message = NetworkMessage::Response(response);
+    if let Ok(json) = serde_json::to_string(&response_message) {
+        if let Err(e) = gossipsub.publish(topic, json.as_bytes()) {
+            eprintln!("Failed to publish response: {:?}", e);
+        } else {
+            println!("Published commit response.");
         }
     }
 }
