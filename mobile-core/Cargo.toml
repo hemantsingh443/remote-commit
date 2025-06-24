@@ -1,0 +1,29 @@
+[package]
+name = "mobile-core"
+version = "0.1.0"
+edition = "2021"
+
+# Add this build script dependency
+build = "build.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+libp2p = { version = "0.51", features = [
+    "tokio",
+    "gossipsub",
+    "mdns",
+    "noise",
+    "tcp",
+    "yamux",
+    "macros",
+] }
+futures = "0.3"
+
+# --- ADD THESE ---
+uniffi = { version = "0.25", features = ["tokio"] }
+
+[build-dependencies]
+uniffi = { version = "0.25", features = ["build"] }

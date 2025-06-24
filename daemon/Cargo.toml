@@ -1,0 +1,25 @@
+[package]
+name = "daemon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+git-actor = { path = "../git-actor" }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+
+# Corrected libp2p dependencies with all required features
+libp2p = { version = "0.51", features = [
+    "tokio",
+    "gossipsub",
+    "mdns",
+    "noise",
+    "tcp",
+    "yamux",
+    "macros",        # Enables #[derive(NetworkBehaviour)]
+    "dns",           # Required for development_transport
+    "websocket",     # Often needed for full transport support
+] } 
+futures = "0.3"

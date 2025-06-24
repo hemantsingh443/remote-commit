@@ -1,0 +1,8 @@
+[package]
+name = "git-actor"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+git2 = "0.16"  # The library for interacting with Git
+anyhow = "1.0" # For easy and clean error handling
