@@ -23,5 +23,8 @@ libp2p = { version = "0.51", features = [
     "dns",           # Required for development_transport
     "websocket",     # Often needed for full transport support
     "serde",         # Enable serde support for PeerId
+    "kad",          # Kademlia DHT for peer discovery
+    "relay",        # For traversing NATs
+    "identify",     # To identify peers and their addresses
 ] } 
 futures = "0.3"

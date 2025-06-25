@@ -13,6 +13,10 @@ use libp2p::{
     yamux,
     Transport,
     gossipsub::Message,
+    kad::{self, store::MemoryStore},
+    identify,
+    relay,
+    Multiaddr,
 };
 use futures::StreamExt; // Required for select_next_some()
 use tokio::select;
@@ -64,6 +68,9 @@ impl PeerManager {
 struct DaemonBehaviour {
     gossipsub: gossipsub::Behaviour,
     mdns: mdns::tokio::Behaviour,
+    identify: identify::Behaviour,
+    relay: relay::Behaviour,
+    kademlia: kad::Kademlia<MemoryStore>,
 }
 
 #[tokio::main]
@@ -97,22 +104,46 @@ async fn main() -> Result<()> {
     let topic = gossipsub::IdentTopic::new("emergency-git-commits");
 
     // Use the modern SwarmBuilder API
-    let mut swarm = SwarmBuilder::with_tokio_executor(
-        transport,
-        DaemonBehaviour {
+    let mut swarm = {
+        // --- Kademlia Setup ---
+        let store = MemoryStore::new(local_peer_id);
+        let mut kademlia = kad::Kademlia::new(local_peer_id, store);
+        let bootstrap_nodes = [
+            "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+            "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt"
+        ];
+        for addr in bootstrap_nodes {
+            let multiaddr: Multiaddr = addr.parse().expect("Failed to parse bootstrap address");
+            if let Some(libp2p::multiaddr::Protocol::P2p(hash)) = multiaddr.iter().last() {
+                let peer_id = PeerId::from_multihash(hash).expect("Valid PeerId multihash");
+                kademlia.add_address(&peer_id, multiaddr);
+            } else {
+                eprintln!("Could not extract PeerId from bootstrap address: {}", addr);
+            }
+        }
+        kademlia.bootstrap().unwrap();
+        // --- End Kademlia Setup ---
+        let behaviour = DaemonBehaviour {
             gossipsub: {
                 let gossipsub_config = gossipsub::Config::default();
                 gossipsub::Behaviour::new(
-                    gossipsub::MessageAuthenticity::Signed(id_keys),
+                    gossipsub::MessageAuthenticity::Signed(id_keys.clone()),
                     gossipsub_config,
                 )
                 .map_err(|e| anyhow!(e))?
             },
             mdns: mdns::tokio::Behaviour::new(mdns::Config::default(), local_peer_id)?,
-        },
-        local_peer_id,
-    )
-    .build();
+            identify: identify::Behaviour::new(identify::Config::new(
+                "/emergency-git/1.0".into(),
+                id_keys.public(),
+            )),
+            relay: relay::Behaviour::new(local_peer_id, Default::default()),
+            kademlia,
+        };
+        SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build()
+    };
 
     // Subscribe to the topic AFTER the swarm is created
     swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
@@ -162,6 +193,32 @@ async fn main() -> Result<()> {
                         _ => {}
                     }
                 }
+                SwarmEvent::Behaviour(DaemonBehaviourEvent::Identify(identify::Event::Received {
+                    peer_id,
+                    info,
+                })) => {
+                    println!("[Identify] Received info from peer: {}", peer_id);
+                    println!("[Identify] Their observed address: {}", info.observed_addr);
+                    println!("[Identify] Their listen addresses: {:?}", info.listen_addrs);
+
+                    // Add their listen addresses to Kademlia so we can find them later.
+                    for addr in info.listen_addrs {
+                        swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
+                    }
+                },
+                SwarmEvent::Behaviour(DaemonBehaviourEvent::Identify(identify::Event::Pushed { peer_id, .. })) => {
+                    println!("[Identify] Pushed our info to peer: {}", peer_id);
+                    // Let's log our current known external addresses
+                    println!("\n✅✅✅ DAEMON'S POTENTIAL PUBLIC ADDRESSES ✅✅✅");
+                    println!("Copy one of these full addresses for the client:");
+                    for addr_record in swarm.external_addresses() {
+                        println!(
+                            "  -> {}",
+                            addr_record.addr.clone().with(libp2p::multiaddr::Protocol::P2p(local_peer_id.into()))
+                        );
+                    }
+                    println!("✅✅✅ --- END OF ADDRESSES --- ✅✅✅\n");
+                },
                 _ => {}
             }
         }

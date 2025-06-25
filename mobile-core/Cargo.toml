@@ -24,6 +24,9 @@ libp2p = { version = "0.51", features = [
     "yamux",
     "macros", 
      "serde",
+    "kad",
+    "relay",
+    "identify",
 ] }
 futures = "0.3"
 

@@ -1,4 +1,0 @@
-namespace mobile_core {
-    // UniFFI will automatically handle the async nature for us.
-    string emergency_commit(string repo_path, string file_path, string new_content, string commit_message);
-};
