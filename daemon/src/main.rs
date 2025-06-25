@@ -26,6 +26,7 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use pico_args;
 use serde_json;
+use tokio::time::{sleep, Duration};
 
 mod protocol;
 use protocol::{CommitRequest, CommitResponse, NetworkMessage};
@@ -177,7 +178,7 @@ async fn main() -> Result<()> {
                     match serde_json::from_slice::<NetworkMessage>(&message.data) {
                         Ok(NetworkMessage::PairRequest) => {
                             if is_pairing_mode {
-                                handle_pair_request(source_peer, &mut peer_manager, topic.clone(), &mut swarm.behaviour_mut().gossipsub);
+                                handle_pair_request(source_peer, &mut peer_manager, topic.clone(), &mut swarm.behaviour_mut().gossipsub).await;
                             } else {
                                 println!("Ignoring pair request from {}. Daemon not in --pair mode.", source_peer);
                             }
@@ -226,30 +227,48 @@ async fn main() -> Result<()> {
 }
 
 // --- NEW: Handler for pairing ---
-fn handle_pair_request(
+async fn handle_pair_request(
     peer_id: PeerId,
     peer_manager: &mut PeerManager,
     topic: gossipsub::IdentTopic,
     gossipsub: &mut gossipsub::Behaviour,
 ) {
-    print!("Pairing request received from {}. Approve? (y/n): ", peer_id);
+    println!("Pairing request received from {}. Approve? (y/n): ", peer_id);
     io::stdout().flush().unwrap();
-    let mut line = String::new();
-    if io::stdin().read_line(&mut line).is_ok() && line.trim().eq_ignore_ascii_case("y") {
+
+    let approved = tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        io::stdin().read_line(&mut line).is_ok() && line.trim().eq_ignore_ascii_case("y")
+    }).await.unwrap_or(false);
+
+    if approved {
         if let Err(e) = peer_manager.add_trusted_peer(peer_id) {
-            eprintln!("Failed to save trusted peer: {}", e);
+            eprintln!("[ERROR] Failed to save trusted peer: {}", e);
             return;
         }
+
         let response = NetworkMessage::PairSuccess;
         if let Ok(json) = serde_json::to_string(&response) {
-            if let Err(e) = gossipsub.publish(topic, json.as_bytes()) {
-                eprintln!("Failed to publish pairing success message: {:?}", e);
-            } else {
-                println!("Published PairSuccess response.");
+            let max_retries = 5;
+            for i in 0..max_retries {
+                match gossipsub.publish(topic.clone(), json.as_bytes()) {
+                    Ok(_) => {
+                        println!("[INFO] Published PairSuccess response.");
+                        return;
+                    }
+                    Err(e) if i < max_retries - 1 => {
+                        eprintln!("[WARN] Failed to publish reply (attempt {}): {}. Retrying...", i + 1, e);
+                        sleep(Duration::from_millis(500)).await;
+                    }
+                    Err(e) => {
+                        eprintln!("[ERROR] Failed to publish pairing success message after all retries: {:?}", e);
+                        return;
+                    }
+                }
             }
         }
     } else {
-        println!("Pairing for {} denied.", peer_id);
+        println!("[INFO] Pairing for {} denied.", peer_id);
     }
 }
 

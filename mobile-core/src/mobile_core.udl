@@ -8,6 +8,7 @@ interface CoreError {
 namespace mobile_core {
     [Throws=CoreError]
     string emergency_commit(
+        string data_dir,
         string daemon_full_addr,
         string repo_path, 
         string file_path, 
@@ -16,5 +17,5 @@ namespace mobile_core {
     );
 
     [Throws=CoreError]
-    void pair(string daemon_full_addr);
+    void pair(string data_dir, string daemon_full_addr);
 };

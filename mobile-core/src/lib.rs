@@ -42,12 +42,12 @@ struct ClientBehaviour {
 }
 
 /// Loads a keypair from a file or creates a new one if it doesn't exist.
-fn get_or_create_identity() -> Result<identity::Keypair, CoreError> {
-    let keypair_path = Path::new("client_identity.key");
-
+fn get_or_create_identity(data_dir: &str) -> Result<identity::Keypair, CoreError> {
+    let identity_dir = Path::new(data_dir);
+    let keypair_path = identity_dir.join("client_identity.key");
     if keypair_path.exists() {
         println!("Loading existing client identity...");
-        let key_bytes = fs::read(keypair_path)
+        let key_bytes = fs::read(&keypair_path)
             .map_err(|e| CoreError::NetworkError { message: format!("Failed to read key file: {}", e) })?;
         identity::Keypair::from_protobuf_encoding(&key_bytes)
             .map_err(|e| CoreError::NetworkError { message: format!("Failed to decode key file: {}", e) })
@@ -56,7 +56,7 @@ fn get_or_create_identity() -> Result<identity::Keypair, CoreError> {
         let keypair = identity::Keypair::generate_ed25519();
         let encoded_key = keypair.to_protobuf_encoding()
             .map_err(|e| CoreError::NetworkError { message: format!("Failed to encode key file: {}", e) })?;
-        fs::write(keypair_path, encoded_key)
+        fs::write(&keypair_path, encoded_key)
             .map_err(|e| CoreError::NetworkError { message: format!("Failed to write key file: {}", e) })?;
         Ok(keypair)
     }
@@ -64,13 +64,14 @@ fn get_or_create_identity() -> Result<identity::Keypair, CoreError> {
 
 // Async implementation
 pub async fn emergency_commit_async(
+    data_dir: String,
     daemon_full_addr: String,
     repo_path: String,
     file_path: String,
     new_content: String,
     commit_message: String,
 ) -> Result<String, CoreError> {
-    let id_keys = get_or_create_identity()?;
+    let id_keys = get_or_create_identity(&data_dir)?;
     let local_peer_id = PeerId::from(id_keys.public());
     println!("Client Peer ID: {}", local_peer_id);
 
@@ -164,6 +165,7 @@ pub async fn emergency_commit_async(
 
 // Synchronous wrapper for UniFFI
 pub fn emergency_commit(
+    data_dir: String,
     daemon_full_addr: String,
     repo_path: String,
     file_path: String,
@@ -173,11 +175,11 @@ pub fn emergency_commit(
     // Create a new Tokio runtime or use the existing one
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CoreError::NetworkError { message: format!("Failed to create runtime: {}", e) })?;
-    rt.block_on(emergency_commit_async(daemon_full_addr, repo_path, file_path, new_content, commit_message))
+    rt.block_on(emergency_commit_async(data_dir, daemon_full_addr, repo_path, file_path, new_content, commit_message))
 }
 
-pub async fn pair_async(daemon_full_addr: String) -> Result<(), CoreError> {
-    let id_keys = get_or_create_identity()?;
+pub async fn pair_async(data_dir: String, daemon_full_addr: String) -> Result<(), CoreError> {
+    let id_keys = get_or_create_identity(&data_dir)?;
     let local_peer_id = PeerId::from(id_keys.public());
     println!("Client Peer ID: {}", local_peer_id);
     let transport = tcp::tokio::Transport::default()
@@ -261,10 +263,10 @@ pub async fn pair_async(daemon_full_addr: String) -> Result<(), CoreError> {
     }
 }
 
-pub fn pair(daemon_full_addr: String) -> Result<(), CoreError> {
+pub fn pair(data_dir: String, daemon_full_addr: String) -> Result<(), CoreError> {
     let rt = tokio::runtime::Runtime::new()
         .map_err(|e| CoreError::NetworkError { message: format!("Failed to create runtime: {}", e) })?;
-    rt.block_on(pair_async(daemon_full_addr))
+    rt.block_on(pair_async(data_dir, daemon_full_addr))
 }
 
 uniffi::include_scaffolding!("mobile_core");
